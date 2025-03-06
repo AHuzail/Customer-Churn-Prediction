@@ -22,7 +22,13 @@ class DataTransformation:
 
     def get_data_transformer_object(self):
         '''
-        This function is responsible for data transformation
+        This function creates and returns a preprocessing pipeline for data transformation.
+        
+        Returns:
+            ColumnTransformer: A preprocessing object containing pipelines for numerical and categorical columns
+            
+        Raises:
+            CustomException: If any error occurs during pipeline creation
         '''
         try:
             # Define numerical and categorical columns
@@ -50,29 +56,22 @@ class DataTransformation:
                 ]
             )
 
-            # Categorical Pipeline for one-hot encoding
+            # Categorical Pipeline for one-hot encoding with memory optimization
             cat_pipeline_onehot = Pipeline(
                 steps=[
                     ("imputer", SimpleImputer(strategy="most_frequent")),
-                    ("one_hot_encoder", OneHotEncoder(drop='first', sparse=False)),
+                    ("one_hot_encoder", OneHotEncoder(drop='first', sparse=True, handle_unknown='ignore')),
                 ]
             )
 
-            # Categorical Pipeline for binary encoding
-            cat_pipeline_binary = Pipeline(
-                steps=[
-                    ("imputer", SimpleImputer(strategy="most_frequent")),
-                    ("one_hot_encoder", OneHotEncoder(drop='first', sparse=False)),
-                ]
-            )
-
-            # Combine all transformers
+            # Binary columns are already transformed using map() function
+            # Only need pipelines for numerical and one-hot columns
             preprocessor = ColumnTransformer(
                 transformers=[
                     ("num_pipeline", num_pipeline, numerical_columns),
-                    ("cat_pipeline_onehot", cat_pipeline_onehot, categorical_columns_onehot),
-                    ("cat_pipeline_binary", cat_pipeline_binary, categorical_columns_binary)
-                ]
+                    ("cat_pipeline_onehot", cat_pipeline_onehot, categorical_columns_onehot)
+                ],
+                remainder='passthrough'  # This will pass through the already encoded binary columns
             )
 
             logging.info("Preprocessing pipelines created successfully")
@@ -82,11 +81,33 @@ class DataTransformation:
             raise CustomException(e, sys)
 
     def initiate_data_transformation(self, train_path, test_path):
+        """
+        Initiates the data transformation process on training and testing datasets.
+        
+        Args:
+            train_path (str): Path to training data CSV
+            test_path (str): Path to testing data CSV
+            
+        Returns:
+            tuple: Transformed training array, test array, and preprocessor file path
+            
+        Raises:
+            CustomException: If any error occurs during transformation
+        """
         try:
+            # Validate file paths
+            if not os.path.exists(train_path) or not os.path.exists(test_path):
+                raise CustomException("Training or testing file path does not exist", sys)
+                
             train_df = pd.read_csv(train_path)
             test_df = pd.read_csv(test_path)
-
-            logging.info("Read train and test data completed")
+            
+            # Validate dataframes
+            if train_df.empty or test_df.empty:
+                raise CustomException("Training or testing data is empty", sys)
+                
+            logging.info(f"Train DataFrame Head: \n{train_df.head().to_string()}\n")
+            logging.info(f"Test DataFrame Head: \n{test_df.head().to_string()}\n")
             logging.info("Obtaining preprocessing object")
 
             preprocessing_obj = self.get_data_transformer_object()
@@ -116,15 +137,36 @@ class DataTransformation:
             input_feature_test_df = test_df.drop(columns=[target_column_name], axis=1)
             target_feature_test_df = test_df[target_column_name]
 
+            # Validate required columns exist
+            required_columns = numerical_columns + categorical_columns_onehot + categorical_columns_binary
+            missing_columns = [col for col in required_columns if col not in input_feature_train_df.columns]
+            if missing_columns:
+                raise CustomException(f"Missing required columns: {missing_columns}", sys)
+
+            logging.info(f"Input feature shapes - Train: {input_feature_train_df.shape}, Test: {input_feature_test_df.shape}")
             logging.info("Applying preprocessing object on training and testing datasets")
 
+            # Apply preprocessing
             input_feature_train_arr = preprocessing_obj.fit_transform(input_feature_train_df)
             input_feature_test_arr = preprocessing_obj.transform(input_feature_test_df)
 
+            # Convert sparse matrices to dense if needed
+            if isinstance(input_feature_train_arr, (pd.DataFrame, pd.Series)):
+                input_feature_train_arr = input_feature_train_arr.to_numpy()
+            elif hasattr(input_feature_train_arr, "toarray"):
+                input_feature_train_arr = input_feature_train_arr.toarray()
+                
+            if isinstance(input_feature_test_arr, (pd.DataFrame, pd.Series)):
+                input_feature_test_arr = input_feature_test_arr.to_numpy()
+            elif hasattr(input_feature_test_arr, "toarray"):
+                input_feature_test_arr = input_feature_test_arr.toarray()
+
+            # Combine with target
             train_arr = np.c_[input_feature_train_arr, np.array(target_feature_train_df)]
             test_arr = np.c_[input_feature_test_arr, np.array(target_feature_test_df)]
 
-            logging.info("Saved preprocessing object")
+            logging.info(f"Final arrays shape - Train: {train_arr.shape}, Test: {test_arr.shape}")
+            logging.info("Saving preprocessing object")
 
             save_object(
                 file_path=self.data_transformation_config.preprocessor_obj_file_path,
